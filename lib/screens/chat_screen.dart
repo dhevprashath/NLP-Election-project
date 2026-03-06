@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_spinkit/flutter_spinkit.dart';
 import '../models/message.dart';
 import '../services/api_service.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -16,38 +17,62 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
   final ApiService _apiService = ApiService();
   final stt.SpeechToText _speech = stt.SpeechToText();
+  final FocusNode _focusNode = FocusNode();
 
-  List<Message> _messages = [];
+  Future<void> _launchURL(String url) async {
+    final Uri uri = Uri.parse(url);
+    if (!await launchUrl(uri)) {
+      debugPrint("Could not launch $url");
+    }
+  }
+
+  final List<Message> _messages = [];
   List<String> _suggestions = [];
   bool _isListening = false;
   bool _isLoading = false;
   bool _showSuggestions = false;
   Timer? _debounce;
+  Timer? _speechTimeout;
 
   @override
   void initState() {
     super.initState();
-    _messages.add(Message(
+    _addInitialMessage();
+    _initSpeech();
+  }
+
+  void _addInitialMessage() {
+    final initialMessage = Message(
       text:
           "Hello! I am your Election Campaign Assistant. Ask me about party slogans, symbols, or candidates.",
       isUser: false,
-    ));
-    _initSpeech();
+    );
+    _messages.add(initialMessage);
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
+    _speechTimeout?.cancel();
     _textController.dispose();
     _scrollController.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
   void _initSpeech() async {
     try {
-      await _speech.initialize();
+      await _speech.initialize(
+        onError: (val) => debugPrint('STT Error: $val'),
+        onStatus: (val) {
+          if (val == 'done' || val == 'notListening') {
+            setState(() => _isListening = false);
+          }
+        },
+      );
     } catch (e) {
       debugPrint("Speech init error: $e");
     }
@@ -55,193 +80,176 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _listen() async {
     if (!_isListening) {
-      bool available = await _speech.initialize();
-      if (available) {
-        setState(() => _isListening = true);
-        _speech.listen(
-          onResult: (val) {
-            setState(() {
-              _textController.text = val.recognizedWords;
-              if (val.hasConfidenceRating && val.confidence > 0) {
-                // optional: show confidence
+      if (!_speech.isAvailable) {
+        bool available = await _speech.initialize();
+        if (!available) return;
+      }
+
+      setState(() => _isListening = true);
+      _speech.listen(
+        onResult: (val) {
+          setState(() {
+            _textController.text = val.recognizedWords;
+          });
+
+          _onTextChanged(val.recognizedWords);
+
+          // Custom auto-submission timeout
+          _speechTimeout?.cancel();
+          if (val.recognizedWords.trim().isNotEmpty) {
+            _speechTimeout = Timer(const Duration(milliseconds: 3000), () {
+              if (_isListening) {
+                _sendMessage(val.recognizedWords);
+                _speech.stop();
+                setState(() => _isListening = false);
               }
             });
-            _onTextChanged(val.recognizedWords);
-          },
-        );
-      }
+          }
+
+          // Auto-send when final result is received
+          if (val.finalResult && val.recognizedWords.trim().isNotEmpty) {
+            _speechTimeout?.cancel();
+            _sendMessage(val.recognizedWords);
+            _speech.stop();
+          }
+        },
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(milliseconds: 3000),
+        partialResults: true,
+        listenMode: stt.ListenMode.confirmation,
+      );
     } else {
-      setState(() => _isListening = false);
       _speech.stop();
+      setState(() => _isListening = false);
     }
+  }
+
+  void _addMessage(Message message) {
+    _messages.add(message);
+    _listKey.currentState?.insertItem(_messages.length - 1,
+        duration: const Duration(milliseconds: 500));
+    _scrollToBottom();
   }
 
   void _sendMessage([String? text]) async {
     final msgText = text ?? _textController.text.trim();
     if (msgText.isEmpty) return;
 
+    _addMessage(Message(text: msgText, isUser: true));
+
     setState(() {
-      _messages.add(Message(text: msgText, isUser: true));
       _isLoading = true;
       _textController.clear();
       _suggestions = [];
       _showSuggestions = false;
     });
-    _scrollToBottom();
 
-    // Check for Flag request
+    // Keep the input field focused
+    _focusNode.requestFocus();
+
+    // Check for Flag or Logo request
     String lowerMsg = msgText.toLowerCase();
-    Map<String, String> partyFlags = {
-      "aiadmk": "assets/images/aiadmk_flag.png",
-      "admk": "assets/images/aiadmk_flag.png",
-      "ntk": "assets/images/ntk_flag.png",
-      "naam tamilar katchi": "assets/images/ntk_flag.png",
-      "tvk": "assets/images/tvk_flag.png",
-      "tamilaga vettri kazhagam": "assets/images/tvk_flag.png",
-      "dmk": "assets/images/dmk_flag.png",
-      "dravida munnetra kazhagam": "assets/images/dmk_flag.png",
-      "bjp": "assets/images/bjp_flag.png",
-      "bharatiya janata party": "assets/images/bjp_flag.png",
-      "congress": "assets/images/congress_flag.png",
-      "inc": "assets/images/congress_flag.png",
+    Map<String, List<String>> partyAliases = {
+      "AIADMK": ["aiadmk", "admk", "two leaves", "eps"],
+      "DMK": ["dmk", "rising sun", "stalin"],
+      "BJP": ["bjp", "lotus", "annamalai", "modi"],
+      "INC": ["congress", "inc", "hand", "rahul"],
+      "NTK": ["ntk", "tiger", "seeman"],
+      "TVK": [
+        "tvk",
+        "tvke",
+        "tv ke",
+        "vijay",
+        "thalapathy",
+        "yellow and red flag"
+      ],
+      "CPI": ["cpi", "communist", "comunist", "hammer and sickle"],
     };
 
-    String? foundParty;
-    String? foundFlagPath;
+    Map<String, String> partyFlagAssets = {
+      "AIADMK": "assets/images/aiadmk_flag.png",
+      "DMK": "assets/images/dmk_flag.png",
+      "BJP": "assets/images/bjp_flag.png",
+      "INC": "assets/images/congress_flag.png",
+      "NTK": "assets/images/ntk_flag.png",
+      "TVK": "assets/images/tvk_flag.png",
+      "CPI": "assets/images/cpi_flag.png",
+    };
 
-    if (lowerMsg.contains("flag")) {
-      for (var entry in partyFlags.entries) {
-        if (lowerMsg.contains(entry.key)) {
-          foundParty = entry.key.toUpperCase();
-          foundFlagPath = entry.value;
-          break;
+    Map<String, String> partyLogoAssets = {
+      "CPI": "assets/images/cpi_logo.png",
+    };
+
+    String? foundPartyId;
+    String? foundAssetPath;
+    String assetType = "flag";
+
+    if (lowerMsg.contains("flag") ||
+        lowerMsg.contains("logo") ||
+        lowerMsg.contains("symbol")) {
+      for (var entry in partyAliases.entries) {
+        for (var alias in entry.value) {
+          if (lowerMsg.contains(alias)) {
+            foundPartyId = entry.key;
+            break;
+          }
+        }
+        if (foundPartyId != null) break;
+      }
+
+      if (foundPartyId != null) {
+        if (lowerMsg.contains("logo") || lowerMsg.contains("symbol")) {
+          assetType = "logo";
+          foundAssetPath =
+              partyLogoAssets[foundPartyId] ?? partyFlagAssets[foundPartyId];
+        } else {
+          assetType = "flag";
+          foundAssetPath = partyFlagAssets[foundPartyId];
         }
       }
     }
 
-    if (foundFlagPath != null) {
-      // Simulate network delay
-      await Future.delayed(const Duration(milliseconds: 500));
-
-      setState(() {
-        _messages.add(Message(
-          text: "Here is the flag of $foundParty:",
-          isUser: false,
-          imagePath: foundFlagPath,
-          intent: "SHOW_FLAG",
-        ));
-        _isLoading = false;
-      });
-      _scrollToBottom();
-      return;
-    }
-
-    // Check for Party History / Leader info
-    Map<String, String> partyHistory = {
-      "aiadmk":
-          "AIADMK Leaders History:\n1. M.G. Ramachandran (Founder)\n2. J. Jayalalithaa\n3. Edappadi K. Palaniswami (General Secretary)",
-      "dmk":
-          "DMK Leaders History:\n1. C.N. Annadurai (Founder)\n2. M. Karunanidhi\n3. M.K. Stalin (Current)",
-      "ntk": "Naam Tamilar Katchi Leaders:\n1. Seeman (Chief Coordinator)",
-      "tvk": "Tamilaga Vettri Kazhagam Leaders:\n1. Vijay (President)",
-      "bjp":
-          "BJP Tamil Nadu Presidents (Recent):\n1. Tamilisai Soundararajan\n2. L. Murugan\n3. K. Annamalai (Current)",
-      "congress":
-          "TN Congress Committee Presidents (Recent):\n1. E.V.K.S. Elangovan\n2. Su. Thirunavukkarasar\n3. K.S. Alagiri\n4. K. Selvaperunthagai (Current)",
-    };
-
-    Map<String, String> leaderInfo = {
-      "stalin":
-          "M.K. Stalin is the Chief Minister of Tamil Nadu and the President of the Dravida Munnetra Kazhagam (DMK). He is the son of former CM M. Karunanidhi.",
-      "mk stalin":
-          "M.K. Stalin is the Chief Minister of Tamil Nadu and the President of the Dravida Munnetra Kazhagam (DMK). He is the son of former CM M. Karunanidhi.",
-      "eps":
-          "Edappadi K. Palaniswami (EPS) is the General Secretary of the All India Anna Dravida Munnetra Kazhagam (AIADMK) and served as the 7th Chief Minister of Tamil Nadu.",
-      "palaniswami":
-          "Edappadi K. Palaniswami (EPS) is the General Secretary of the All India Anna Dravida Munnetra Kazhagam (AIADMK) and served as the 7th Chief Minister of Tamil Nadu.",
-      "seeman":
-          "Seeman is the Chief Coordinator of the Naam Tamilar Katchi (NTK). He is a film director turned politician known for his Tamil nationalist ideology.",
-      "vijay":
-          "Vijay is a popular actor and the President of the newly formed Tamilaga Vettri Kazhagam (TVK). He entered politics in 2024.",
-      "thalapathy":
-          "Vijay is a popular actor and the President of the newly formed Tamilaga Vettri Kazhagam (TVK). He entered politics in 2024.",
-      "annamalai":
-          "K. Annamalai is the State President of the Bharatiya Janata Party (BJP) in Tamil Nadu. He is a former IPS officer.",
-    };
-
-    String? responseText;
-    String? intent;
-
-    // Check History first
-    if (lowerMsg.contains("history") ||
-        lowerMsg.contains("previous") ||
-        (lowerMsg.contains("leaders") && !lowerMsg.contains("who"))) {
-      for (var entry in partyHistory.entries) {
-        if (lowerMsg.contains(entry.key)) {
-          responseText = entry.value;
-          intent = "Get_Party_History"; // Custom intent
-          break;
-        }
-      }
-    }
-
-    // Check Leader details if no history found
-    if (responseText == null) {
-      for (var entry in leaderInfo.entries) {
-        if (lowerMsg.contains(entry.key)) {
-          responseText = entry.value;
-          intent = "Get_Candidate_Details";
-          break;
-        }
-      }
-    }
-
-    if (responseText != null) {
-      // Simulate network delay
-      await Future.delayed(const Duration(milliseconds: 500));
-      setState(() {
-        _messages.add(Message(
-          text: responseText!,
-          isUser: false,
-          intent: intent,
-        ));
-        _isLoading = false;
-      });
-      _scrollToBottom();
+    if (foundAssetPath != null) {
+      await Future.delayed(const Duration(milliseconds: 800));
+      setState(() => _isLoading = false);
+      _addMessage(Message(
+        text: "Here is the $assetType of $foundPartyId:",
+        isUser: false,
+        imagePath: foundAssetPath,
+        intent: "SHOW_FLAG",
+      ));
       return;
     }
 
     try {
       final response = await _apiService.sendMessage(msgText);
-      setState(() {
-        _messages.add(Message(
-          text: response['response_text'],
-          isUser: false,
-          intent: response['detected_intent'],
-        ));
-      });
-    } catch (e) {
-      setState(() {
-        _messages.add(Message(
-          text: "Error: Could not connect to server.",
-          isUser: false,
-        ));
-      });
-    } finally {
       setState(() => _isLoading = false);
-      _scrollToBottom();
+
+      String? imageUrl;
+      if (response['data'] != null && response['data']['image_url'] != null) {
+        imageUrl = response['data']['image_url'];
+      }
+
+      _addMessage(Message(
+        text: response['response_text'],
+        isUser: false,
+        intent: response['detected_intent'],
+        imageUrl: imageUrl,
+      ));
+    } catch (e) {
+      setState(() => _isLoading = false);
+      _addMessage(
+          Message(text: "Error: Could not connect to server.", isUser: false));
     }
   }
 
   void _onTextChanged(String value) {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
-
     _debounce = Timer(const Duration(milliseconds: 300), () async {
       if (value.isEmpty) {
         setState(() => _showSuggestions = false);
         return;
       }
-
       final suggestions = await _apiService.getSuggestions(value);
       setState(() {
         _suggestions = suggestions;
@@ -251,12 +259,12 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    Future.delayed(const Duration(milliseconds: 300), () {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOutCubic,
         );
       }
     });
@@ -265,84 +273,154 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text("Election Assistant",
-            style: TextStyle(color: Colors.white)),
-        backgroundColor: Colors.blue[900],
+        title: Text("Election Assistant",
+            style: GoogleFonts.outfit(
+                fontWeight: FontWeight.bold, color: Colors.white)),
+        backgroundColor: Colors.transparent,
         elevation: 0,
+        centerTitle: true,
       ),
-      backgroundColor: Colors.blue,
-      body: Column(
-        children: [
-          Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.all(16),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                return _buildMessageBubble(_messages[index]);
-              },
-            ),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Colors.blue[900]!, Colors.blue[600]!, Colors.blue[400]!],
           ),
-          if (_isLoading)
-            const Padding(
-              padding: EdgeInsets.all(8.0),
-              child: SpinKitThreeBounce(color: Colors.lightBlue, size: 20),
-            ),
-          _buildInputArea(),
-        ],
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: AnimatedList(
+                  key: _listKey,
+                  controller: _scrollController,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                  initialItemCount: _messages.length,
+                  itemBuilder: (context, index, animation) {
+                    return _buildAnimatedMessageBubble(
+                        _messages[index], animation);
+                  },
+                ),
+              ),
+              if (_isLoading)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 12.0),
+                  child: SpinKitPulse(color: Colors.white70, size: 30),
+                ),
+              _buildInputArea(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAnimatedMessageBubble(Message msg, Animation<double> animation) {
+    return SizeTransition(
+      sizeFactor: animation,
+      child: FadeTransition(
+        opacity: animation,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.2),
+            end: Offset.zero,
+          ).animate(
+              CurvedAnimation(parent: animation, curve: Curves.easeOutQuad)),
+          child: _buildMessageBubble(msg),
+        ),
       ),
     );
   }
 
   Widget _buildMessageBubble(Message msg) {
-    return Align(
-      alignment: msg.isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          color: msg.isUser ? Colors.white : Colors.blue[800],
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: msg.isUser ? const Radius.circular(16) : Radius.zero,
-            bottomRight: msg.isUser ? Radius.zero : const Radius.circular(16),
-          ),
-        ),
-        constraints:
-            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+    final bool isUser = msg.isUser;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Align(
+        alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment:
+              isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
-            if (msg.imagePath != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              decoration: BoxDecoration(
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 8,
+                    offset: const Offset(0, 4),
+                  )
+                ],
+                gradient: isUser
+                    ? const LinearGradient(
+                        colors: [Colors.white, Color(0xFFF5F7FA)])
+                    : LinearGradient(
+                        colors: [Colors.blue[800]!, Colors.blue[900]!]),
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(20),
+                  topRight: const Radius.circular(20),
+                  bottomLeft: isUser ? const Radius.circular(20) : Radius.zero,
+                  bottomRight: isUser ? Radius.zero : const Radius.circular(20),
+                ),
+              ),
+              constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * 0.8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (msg.imagePath != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10.0),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.asset(msg.imagePath!, fit: BoxFit.cover),
+                      ),
+                    ),
+                  if (msg.imageUrl != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10.0),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.network(
+                          "${ApiService.baseUrl}${msg.imageUrl}",
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Icon(Icons.broken_image,
+                                color: Colors.white24, size: 50);
+                          },
+                        ),
+                      ),
+                    ),
+                  _buildMessageText(msg, isUser),
+                ],
+              ),
+            ),
+            if (!isUser && msg.intent != null && msg.intent != "OUT_OF_DOMAIN")
               Padding(
-                padding: const EdgeInsets.only(bottom: 8.0),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Image.asset(
-                    msg.imagePath!,
-                    fit: BoxFit.cover,
-                    width: 200, // Adjust as needed
+                padding: const EdgeInsets.only(top: 6, left: 4),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    msg.intent!.replaceAll("_", " "),
+                    style: GoogleFonts.inter(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white70,
+                      letterSpacing: 0.5,
+                    ),
                   ),
                 ),
               ),
-            Text(
-              msg.text,
-              style: GoogleFonts.poppins(
-                color: msg.isUser ? Colors.blue[900] : Colors.white,
-              ),
-            ),
-            if (!msg.isUser &&
-                msg.intent != null &&
-                msg.intent != "OUT_OF_DOMAIN")
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  "Intent: ${msg.intent}",
-                  style: const TextStyle(fontSize: 10, color: Colors.grey),
-                ),
-              )
           ],
         ),
       ),
@@ -350,71 +428,169 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildInputArea() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (_showSuggestions)
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_showSuggestions) _buildSuggestionsList(),
+          const SizedBox(height: 8),
           Container(
-            color: Theme.of(context).colorScheme.surface,
-            constraints: const BoxConstraints(maxHeight: 150),
-            child: ListView.separated(
-              itemCount: _suggestions.length,
-              separatorBuilder: (ctx, i) => const Divider(height: 1),
-              itemBuilder: (ctx, i) {
-                return ListTile(
-                  dense: true,
-                  title: Text(_suggestions[i]),
-                  onTap: () {
-                    _textController.text = _suggestions[i];
-                    _sendMessage(_suggestions[i]);
-                    setState(() => _showSuggestions = false);
-                  },
-                );
-              },
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(30),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 20,
+                  offset: const Offset(0, 4),
+                )
+              ],
+            ),
+            child: Row(
+              children: [
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: Icon(_isListening ? Icons.mic : Icons.mic_none,
+                      color: _isListening ? Colors.red : Colors.blueGrey),
+                  onPressed: _listen,
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: _textController,
+                    focusNode: _focusNode,
+                    autofocus: true,
+                    onChanged: _onTextChanged,
+                    onSubmitted: (val) => _sendMessage(),
+                    style: const TextStyle(color: Colors.black87, fontSize: 16),
+                    decoration: InputDecoration(
+                      hintText: "Ask about elections...",
+                      hintStyle: GoogleFonts.poppins(
+                          color: Colors.grey[400], fontSize: 15),
+                      border: InputBorder.none,
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () => _sendMessage(),
+                  child: Container(
+                    margin: const EdgeInsets.all(6),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                          colors: [Colors.blue[700]!, Colors.blue[900]!]),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.send_rounded,
+                        color: Colors.white, size: 22),
+                  ),
+                ),
+                const SizedBox(width: 4),
+              ],
             ),
           ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 10,
-                offset: const Offset(0, -5),
-              ),
-            ],
-          ),
-          child: Row(
-            children: [
-              IconButton(
-                icon: Icon(
-                  _isListening ? Icons.mic : Icons.mic_none,
-                  color: _isListening ? Colors.red : Colors.grey,
-                ),
-                onPressed: _listen,
-              ),
-              Expanded(
-                child: TextField(
-                  controller: _textController,
-                  autofocus: true,
-                  onChanged: _onTextChanged,
-                  decoration: InputDecoration(
-                    hintText: "Ask about elections...",
-                    hintStyle: TextStyle(color: Colors.grey[600]),
-                    border: InputBorder.none,
-                  ),
-                  style: const TextStyle(color: Colors.black),
-                  onSubmitted: _sendMessage,
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.send, color: Colors.lightBlue),
-                onPressed: () => _sendMessage(),
-              ),
-            ],
-          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSuggestionsList() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)],
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 180),
+        child: ListView.builder(
+          shrinkWrap: true,
+          itemCount: _suggestions.length,
+          itemBuilder: (ctx, i) {
+            return ListTile(
+              dense: true,
+              visualDensity: VisualDensity.compact,
+              title: Text(_suggestions[i],
+                  style: GoogleFonts.poppins(fontSize: 14)),
+              onTap: () {
+                _textController.text = _suggestions[i];
+                _sendMessage(_suggestions[i]);
+                setState(() => _showSuggestions = false);
+              },
+            );
+          },
         ),
+      ),
+    );
+  }
+
+  Widget _buildMessageText(Message msg, bool isUser) {
+    final style = GoogleFonts.poppins(
+      height: 1.4,
+      fontSize: 15,
+      color: isUser ? Colors.blue[900] : Colors.white.withOpacity(0.95),
+      fontWeight: isUser ? FontWeight.w500 : FontWeight.w400,
+    );
+
+    // Detect YouTube links or any URL
+    final urlRegExp = RegExp(r'(https?://[^\s]+)');
+    final matches = urlRegExp.allMatches(msg.text);
+
+    if (matches.isEmpty) {
+      return Text(msg.text, style: style);
+    }
+
+    // Since TextSpan recognizers can be tricky, we'll check if it's a SONG_QUERY
+    // and provide a dedicated button if needed.
+    return Column(
+      crossAxisAlignment:
+          isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        Text(msg.text, style: style),
+        if (matches.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 8.0),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(20),
+                onTap: () {
+                  debugPrint("Tapped link: ${matches.first.group(0)}");
+                  _launchURL(matches.first.group(0)!);
+                },
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isUser ? Colors.blue[50] : Colors.white12,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                        color: isUser ? Colors.blue[100]! : Colors.white24),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.play_circle_fill,
+                          color: Colors.red, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        "Watch on YouTube",
+                        style: GoogleFonts.poppins(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: isUser ? Colors.blue[900] : Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }

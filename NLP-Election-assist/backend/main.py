@@ -1,9 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from nlp_engine import NLPEngine
 
 app = FastAPI(title="Election Campaign Assistant API")
+
+# Mount the static directory for images
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Allow CORS for Flutter app (which might run on an emulator or device)
 # In production, restrict this to specific origins.

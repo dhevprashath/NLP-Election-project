@@ -7,7 +7,14 @@ def test_nlp():
     res = nlp.get_response("Dravidam means development")
     assert res["intent"] == "SLOGAN_DETECTED"
     assert res["data"]["name"] == "DMK"
+    assert "Official Slogans" in res["response_text"]
     print("Test 1 Passed: Slogan Detection")
+
+    # Test 6: Slogan Query
+    res = nlp.get_response("What is the slogan of AIADMK?")
+    assert res["intent"] == "SLOGAN_QUERY"
+    assert "amma's rule" in res["response_text"]
+    print("Test 6 Passed: Slogan Query")
 
     # Test 2: Symbol Identification
     res = nlp.get_response("Which party has Two Leaves symbol?")
@@ -30,6 +37,13 @@ def test_nlp():
     suggestions = nlp.get_suggestions("Rising")
     assert "Rising Sun" in suggestions
     print("Test 5 Passed: Suggestions")
+
+    # Test 7: Song Query
+    res = nlp.get_response("Play DMK song")
+    assert res["intent"] == "SONG_QUERY"
+    assert "youtube.com" in res["response_text"]
+    assert "Stalin" in res["response_text"]
+    print("Test 7 Passed: Song Query")
 
 if __name__ == "__main__":
     test_nlp()
