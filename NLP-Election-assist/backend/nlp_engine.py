@@ -5,14 +5,15 @@ try:
     HAS_JOBLIB = True
 except ImportError:
     HAS_JOBLIB = False
-from data import PARTIES as FULL_PARTY_DATABASE
+from data import PARTIES as FULL_PARTY_DATABASE, NATIONAL_STATISTICS
 
 ELECTION_KEYWORDS = [
-    "party", "slogan", "symbol", "cm", "minister", "vote", "election", 
+    "party", "parties", "slogan", "symbol", "cm", "minister", "vote", "election", 
     "candidate", "poll", "dmk", "aiadmk", "bjp", "ntk", "congress", "tvk", "tvke", "inc", "pmk", "dmdk", "mdmk", "vck", "cpi", "cpim", "communist", "comunist",
     "stalin", "edappadi", "annamalai", "seeman", "vijay", "leader", "captain", "vijayakanth", "anbumani", "thirumavalavan", "vaiko",
     "mla", "mp", "politics", "manifesto", "dravidam", "amma", "alliance", "founder", "founded", "tamilaga", "tamizhaga",
-    "song", "songs", "anthem", "youtube", "music", "video", "rajya sabha", "leadership", "president", "secretary", "ideology", "flag", "hammer", "sickle", "logo"
+    "song", "songs", "anthem", "youtube", "music", "video", "rajya sabha", "leadership", "president", "secretary", "ideology", "flag", "hammer", "sickle", "logo", "tamil nadu", "tn", "list", "show",
+    "india", "national", "country", "election commission", "eci"
 ]
 
 class NLPEngine:
@@ -36,6 +37,16 @@ class NLPEngine:
                 print(f"Warning: NLP Model not found at {self.model_path}. Falling back to rule-based classification.")
         except Exception as e:
             print(f"Error loading NLP Model: {e}. Falling back to rule-based classification.")
+
+    def _is_person_in_text(self, person_name: str, text: str) -> bool:
+        if not person_name: return False
+        clean_name = re.sub(r'[^\w\s]', '', person_name.lower())
+        # Ignore initials and short words
+        parts = [p for p in clean_name.split() if len(p) > 2]
+        for part in parts:
+            if re.search(r'\b' + re.escape(part) + r'\b', text):
+                return True
+        return False
 
     def is_domain_relevant(self, text: str) -> bool:
         """
@@ -61,9 +72,9 @@ class NLPEngine:
             )
             if party_match:
                 return True
-            if data["cm_candidate_tn"].lower() in text:
+            if self._is_person_in_text(data.get("cm_candidate_tn", ""), text):
                 return True
-            if "founder" in data and data["founder"].lower() in text:
+            if "founder" in data and self._is_person_in_text(data["founder"], text):
                 return True
             for slogan in data["slogans"]:
                 if slogan.lower() in text:
@@ -71,12 +82,12 @@ class NLPEngine:
             
             # Check leadership
             for person in data["leadership"].values():
-                if person.lower() in text:
+                if self._is_person_in_text(person, text):
                     return True
             
             # Check roles
-            for role_data in data["important_roles_in_party"]:
-                if role_data["name"].lower() in text:
+            for role_data in data.get("important_roles_in_party", []):
+                if self._is_person_in_text(role_data.get("name", ""), text):
                     return True
                     
         return False
@@ -117,22 +128,38 @@ class NLPEngine:
             # Search specifically for leaders or candidates
             for party_key in sorted_keys:
                 data = self.parties[party_key]
-                if data["cm_candidate_tn"].lower() in text:
+                if self._is_person_in_text(data.get("cm_candidate_tn", ""), text):
                     detected_party = party_key
                     break
                 for person in data["leadership"].values():
-                    if person.lower() in text:
+                    if self._is_person_in_text(person, text):
                         detected_party = party_key
                         break
-                for role_data in data["important_roles_in_party"]:
-                    if role_data["name"].lower() in text:
+                if detected_party: break
+                for role_data in data.get("important_roles_in_party", []):
+                    if self._is_person_in_text(role_data.get("name", ""), text):
                         detected_party = party_key
                         break
+                if detected_party: break
 
         # 1. HIGH-CONFIDENCE RULE MATCHING (Check before ML)
         # Helper for word boundary check
         def has_word(t, word):
             return re.search(r'\b' + re.escape(word) + r'\b', t)
+
+        # List/Count Parties Query
+        if any(kw in text for kw in ["how many", "what are", "who are", "which are", "list", "show all"]) and any(p_kw in text for p_kw in ["parties", "party"]):
+            if any(i_kw in text for i_kw in ["india", "national", "country", "bharat"]):
+                return "LIST_PARTIES_QUERY", "INDIA"
+            return "LIST_PARTIES_QUERY", "ALL"
+        
+        # Another pattern: "parties in tamil nadu" or "parties in tn"
+        if ("parties" in text or "party" in text) and ("tamil nadu" in text or "tn " in text or " tn" in text):
+             return "LIST_PARTIES_QUERY", "ALL"
+        
+        # Specific India pattern
+        if ("parties" in text or "party" in text) and any(i_kw in text for i_kw in ["india", "national", "country", "bharat"]):
+             return "LIST_PARTIES_QUERY", "INDIA"
 
         # 0. PRIORITIZE HISTORY/RULING YEARS (Most problematic recently)
         if any(kw in text for kw in ["history", "rule", "years", "government", "government", "governments", "ruling"]):
@@ -198,8 +225,20 @@ class NLPEngine:
         if has_word(text, "cm") or "minister" in text or "candidate" in text:
             if detected_party: return "PROPOSED_CM_QUERY", detected_party
 
-        # General Party Info
+        # 4. Specific Leader fallback
+        # If the user specifically entered a leader's name and no other intent was found
         if detected_party:
+            data = self.parties[detected_party]
+            if self._is_person_in_text(data.get("cm_candidate_tn", ""), text):
+                return "LEADERSHIP_QUERY", detected_party
+            for person in data["leadership"].values():
+                if self._is_person_in_text(person, text):
+                    return "LEADERSHIP_QUERY", detected_party
+            for role_data in data.get("important_roles_in_party", []):
+                if self._is_person_in_text(role_data.get("name", ""), text):
+                    return "LEADERSHIP_QUERY", detected_party
+            
+            # General Party Info fallback
             return "PARTY_INFO", detected_party
 
         return "UNKNOWN_ELECTION_QUERY", None
@@ -211,6 +250,27 @@ class NLPEngine:
             return {
                 "response_text": "Sorry, I am not trained for this domain.",
                 "intent": intent
+            }
+
+        if intent == "LIST_PARTIES_QUERY":
+            if data_key == "INDIA":
+                stats = NATIONAL_STATISTICS
+                resp = f"According to the Election Commission of India ({stats['last_updated']}):\n\n"
+                resp += f"- Total Registered Parties: {stats['total_registered_parties']}\n"
+                resp += f"- National Parties: {stats['national_parties_count']} ({', '.join(stats['national_parties_list'])})\n"
+                resp += f"- State Parties: {stats['state_parties_count']}\n"
+                resp += "\nIndia has a multi-party system with a large number of regional and national players."
+                return {
+                    "response_text": resp,
+                    "intent": intent,
+                    "data": stats
+                }
+            
+            party_names = [f"{data['full_name']} ({key})" for key, data in self.parties.items()]
+            return {
+                "response_text": f"I currently have information on {len(self.parties)} parties in Tamil Nadu:\n" + "\n".join([f"- {name}" for name in party_names]),
+                "intent": intent,
+                "data": {"count": len(self.parties), "parties": list(self.parties.keys())}
             }
             
         if not data_key:

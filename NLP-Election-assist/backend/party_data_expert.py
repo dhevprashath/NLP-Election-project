@@ -1,3 +1,12 @@
+
+NATIONAL_STATISTICS = {
+    "total_registered_parties": "2,600+",
+    "national_parties_count": 6,
+    "national_parties_list": ["BJP", "INC", "CPI(M)", "AAP", "BSP", "NPP"],
+    "state_parties_count": 60,
+    "last_updated": "March 2024 (Election Commission of India)"
+}
+
 PARTIES = {
     "DMK": {
         "name": "DMK",

@@ -1,3 +1,12 @@
+
+NATIONAL_STATISTICS = {
+    "total_registered_parties": "2,600+",
+    "national_parties_count": 6,
+    "national_parties_list": ["BJP", "INC", "CPI(M)", "AAP", "BSP", "NPP"],
+    "state_parties_count": 60,
+    "last_updated": "March 2024 (Election Commission of India)"
+}
+
 PARTIES = {
     "DMK": {
         "name": "DMK",
@@ -455,9 +464,10 @@ PARTIES = {
 }
 
 ELECTION_KEYWORDS = [
-    "party", "slogan", "symbol", "cm", "minister", "vote", "election", 
+    "party", "parties", "slogan", "symbol", "cm", "minister", "vote", "election", 
     "candidate", "poll", "dmk", "aiadmk", "bjp", "ntk", "congress", "tvk", "inc", "pmk", "dmdk", "mdmk", "vck", "cpi", "cpim", "communist", "comunist",
     "stalin", "edappadi", "annamalai", "seeman", "vijay", "leader", "captain", "vijayakanth", "anbumani", "thirumavalavan", "vaiko",
     "mla", "mp", "politics", "manifesto", "dravidam", "amma", "alliance", "founder", "founded",
-    "song", "anthem", "youtube", "music", "video", "rajya sabha", "leadership", "president", "secretary", "ideology", "flag", "hammer", "sickle", "constituency"
+    "song", "anthem", "youtube", "music", "video", "rajya sabha", "leadership", "president", "secretary", "ideology", "flag", "hammer", "sickle", "constituency",
+    "india", "national", "country", "election commission", "eci"
 ]
