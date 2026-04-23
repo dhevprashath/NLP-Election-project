@@ -262,7 +262,7 @@ PARTIES = {
         "headquarters": "Kamalalayam, Chennai (TN)",
         "youth_wing": "Bharatiya Janata Yuva Morcha (BJYM)",
         "women_wing": "BJP Mahila Morcha",
-        "student_wing": "Akhil Bharatiya Vidyarthi Parishad (ABVP - affiliated)",
+        "student_wing": "Akhil Bharatiya Vidyarthi Parser (ABVP - affiliated)",
         "official_website": "https://www.bjp.org",
         "major_allies": ["PMK", "Tamil Manila Congress"],
         "famous_leaders": ["K. Annamalai", "L. Ganesan", "Vanathi Srinivasan"],
@@ -462,12 +462,3 @@ PARTIES = {
         ]
     }
 }
-
-ELECTION_KEYWORDS = [
-    "party", "parties", "slogan", "symbol", "cm", "minister", "vote", "election", 
-    "candidate", "poll", "dmk", "aiadmk", "bjp", "ntk", "congress", "tvk", "inc", "pmk", "dmdk", "mdmk", "vck", "cpi", "cpim", "communist", "comunist",
-    "stalin", "edappadi", "annamalai", "seeman", "vijay", "leader", "captain", "vijayakanth", "anbumani", "thirumavalavan", "vaiko",
-    "mla", "mp", "politics", "manifesto", "dravidam", "amma", "alliance", "founder", "founded",
-    "song", "anthem", "youtube", "music", "video", "rajya sabha", "leadership", "president", "secretary", "ideology", "flag", "hammer", "sickle", "constituency",
-    "india", "national", "country", "election commission", "eci"
-]

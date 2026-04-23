@@ -51,9 +51,9 @@ The backend handles the NLP logic and party data.
 
 The frontend is a mobile app communicating with the backend.
 
-1.  **Navigate to the app directory:**
+1.  **Navigate to the app root directory:**
     ```sh
-    cd frontend/election_assistant_app
+    cd election_assistant_app
     ```
 
 2.  **Install dependencies:**
@@ -76,9 +76,12 @@ The frontend is a mobile app communicating with the backend.
 
 ## 🔧 Troubleshooting
 
+### Connection Refused (Web/Desktop)
+If running on Chrome (Web) or Windows Desktop, enter **`localhost`** or **`127.0.0.1`** in the app's IP Connect Screen.
+
 ### Connection Refused (Android Emulator)
-If running on Android Emulator, the backend URL in Dart code must be `http://10.0.2.2:8000` instead of `localhost`.
-- Check `lib/api_service.dart` (or equivalent config file) to ensure the URL matches your environment.
+If running on Android Emulator, the backend URL defaults to `http://10.0.2.2:8000`. If you use the IP Connect Screen, enter **`10.0.2.2`**.
+- Check `lib/services/api_service.dart` to ensure the URL matches your environment.
 
 ### Backend not reloading?
 - Ensure you are running `python main.py` which now includes `reload=True`.
